@@ -106,8 +106,30 @@
           with_items: "{{ ip_allocation.results }}"
           loop_control:
             label: "{{item.item.key}}"
+
+        - fail: msg="Sodding off"
+
       rescue:
         # De-allocate any already allocated IP addresses
+        - name: "De-allocate IPs"
+          infoblox:
+            server: "{{ ibxhost }}"
+            username: "{{ ibxuser }}"
+            password: "{{ ibxpass }}"
+            api_version: 2.6
+            action: delete_host
+            # use the host_ref here, to ensure CORRECT removal
+            host: '{{item.value.host_ref|default("thisisadummyvaluepleaseignore")}}'
+            comment: 'Create via Unix VM provisioning'
+          with_dict: "{{ vlan_data }}"
+          register: ip_removals
+          failed_when: ip_removals.result | length == 0
+          # only do removals if we managed to execute the allocation stage
+          when: ip_allocation is defined
+          loop_control:
+            label: "Removing IP for {{item.key}} in {{item.value.network}}"
+
+        #- debug: var=ip_removals
 
     # Generate the structures to be passed to the VM creation task
     # The datastore must be known, and it's based on the site/cluster selected
@@ -124,7 +146,7 @@
         vm_networks: "{{ (vm_networks | default([])) + [nic_template] }}"
       with_items: [ "{{ vlan_data|dictsort }}" ]
 
-    - debug: var=vm_networks
+    #- debug: var=vm_networks
 
     - fail: msg="Now sod off"
 
@@ -138,7 +160,7 @@
         cluster: '{{ vicluster }}'
         folder: '{{ vifolder }}'
         name: '{{ vmname }}'
-        guest_id: '{{ vm_os }}
+        guest_id: '{{ vm_os }}'
         state: poweredon
         template: '{{ vm_template }}'
         disk: "{{ vm_disks }}"
