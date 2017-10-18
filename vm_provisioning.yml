@@ -1,0 +1,150 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: False
+  
+  vars_files:
+    - vm_provisioning_vars.yml
+
+  vars:
+    # default values
+
+    # select the proper backup VLAN based on the security condition we want to use
+    # backup_vlan: "{{ '251' if is_pci else '252' }}"
+    backup_vlan: 'TESTNET'
+    
+    # internal use templates
+    ip_template:
+      vlan: "{{ item.1.item }}"
+      network: "{{ item.1.result[0].network }}"
+      hostname: "{{ vmname + item.0|string + '.dso.hilton.com' }}"
+    nic_template:
+      vlan: "{{ item.1.vlan }}"
+      device_type: vmxnet3
+      type: static
+      ip: "{{ item.1.ip }}"
+      netmask: "{{ item.1.network | ipaddr('netmask') }}"
+      gateway: "{{ item.1.network | ipaddr('net') | ipaddr('1') | ipaddr('address') if item.0 == 'eth0' else '' }}"
+    disk_template:
+      size_gb: "{{ item }}"
+      datastore: "{{ vidatastore }}"
+      autoselect_datastore: true
+    os_disk:
+      - 60
+
+  vars_prompt:
+    - name: "vipass"
+      prompt: "Enter vCenter password for {{ viuser }}:"
+
+  # Interfaces are named:
+  # eth0 - vmname (main host name)
+  # eth1 - vmname (backup)
+
+  tasks:
+
+    # generate the VLAN/IP allocation data
+    # we set the hash for each interface
+    # containing the VLAN ID and hostname to be used
+    # it will get the IP info added at the allocation stage
+    - name: "Adding the Production VLAN info"
+      set_fact:
+        vlan_data: "{{ (vlan_data | default({})) | combine({'eth'+(item.0+([1,item.0]|min))|string : {'vlan' : item.1, 'hostname' : vmname }}, recursive=True) }}"
+      with_indexed_items:
+        - "{{ vlans }}"
+      loop_control:
+        label: "{{ item.1 }}"
+
+    - name: "Adding the Backup VLAN info"
+      set_fact:
+        vlan_data: "{{ vlan_data | combine ({'eth1' : { 'vlan' : backup_vlan, 'hostname' : vmname + '-bk'}}, recursive=True) }}"
+
+    # end of VLAN/IP allocation data
+
+    # Generate the structure to be passed to the VM creation task
+    # The datastore must be known, and it's based on the site/cluster selected
+    - name: "Generate disk configuration"
+      set_fact:
+        vm_disks: "{{ (vm_disks | default([])) + [disk_template] }}"
+      with_items:
+        - "{{ os_disk }}"
+        - "{{ disks }}"
+
+    - name: "Get VLANs"
+      infoblox:
+        server: "{{ ibxhost }}"
+        username: "{{ ibxuser }}"
+        password: "{{ ibxpass }}"
+        api_version: 2.6
+        action: get_network
+        filters:
+          - { filter: "*VLAN ID", value: "{{ item.value.vlan|string }}" }
+      with_dict: "{{ vlan_data }}"
+      register: vlan_result
+      failed_when: vlan_result.result | length == 0
+      loop_control:
+        label: "{{ item.key }} : {{item.value.vlan}}"
+
+    - name: "Format the VLAN information"
+      set_fact:
+        vlan_data: "{{ vlan_data | combine ({item.item.key : { 'network' : item.result[0].network, 'network_ref' : item.result[0]._ref }}, recursive=True) }}"
+      with_items: "{{ vlan_result.results }}"
+      loop_control:
+        label: "{{item.item.key}}"
+
+    - name: "Allocate IPs"
+      infoblox:
+        server: "{{ ibxhost }}"
+        username: "{{ ibxuser }}"
+        password: "{{ ibxpass }}"
+        api_version: 2.6
+        action: add_host
+        network: '{{item.value.network}}'
+        host: '{{item.value.hostname|lower}}'
+        comment: 'Create via Unix VM provisioning'
+      with_dict: "{{ vlan_data }}"
+      register: ip_allocation
+      failed_when: ip_allocation.result | length == 0
+      loop_control:
+        label: "{{item.key}} in {{item.value.network}}"
+
+    - name: "Format the IP information"
+      set_fact:
+        vlan_data: "{{ vlan_data | combine ({item.item.key : { 'ip' : item.result.ipv4addrs[0].ipv4addr, 'ip_ref' : item.result.ipv4addrs[0]._ref, 'host_ref' : item.result._ref}}, recursive=True) }}"
+      with_items: "{{ ip_allocation.results }}"
+      loop_control:
+        label: "{{item.item.key}}"
+
+    - debug: var=vlan_data
+
+    - name: "Generate NIC configuration"
+      set_fact:
+        vm_networks: "{{ (vm_networks | default([])) + [nic_template] }}"
+      with_items: [ "{{ vlan_data|dictsort }}" ]
+
+    - debug: var=vm_networks
+
+    - fail: msg="Now sod off"
+
+    - name: Create a VM from a template
+      vmware_guest:
+        hostname: '{{ vihost }}'
+        username: '{{ viuser }}'
+        password: '{{ icpass }}'
+        validate_certs: no
+        datacenter: '{{ vmdc }}'
+        cluster: '{{ vmcluster }}'
+        folder: '{{ vmfolder }}'
+        name: '{{ vmname }}'
+        guest_id: rhel6_64Guest
+        state: poweredon
+        template: RHEL6MasterImage
+        disk: "{{ vm_disks }}"
+        networks: "{{ vm_networks }}"
+        customization:
+          dns_servers: '{{ vmdns }}'
+          domain: '{{ vmdomain }}'
+          hostname: '{{ vmname }}'
+      delegate_to: localhost
+      register: deploy_info
+
+    - debug: var=deploy_info
