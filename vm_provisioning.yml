@@ -103,8 +103,66 @@
           loop_control:
             label: "{{item.item.key}}"
 
-        - fail: msg="Sodding off"
+        # Generate the structures to be passed to the VM creation task
+        # The datastore must be known, and it's based on the site/cluster selected
+        - name: "Generate disk configuration"
+          set_fact:
+            vm_disks: "{{ (vm_disks | default([])) + [disk_template] }}"
+          with_items:
+            - "{{ os_disk }}"
+            - "{{ disks }}"
+        
+        # The ordering of the NICs is important
+        - name: "Generate NIC configuration"
+          set_fact:
+            vm_networks: "{{ (vm_networks | default([])) + [nic_template] }}"
+          with_items: [ "{{ vlan_data|dictsort }}" ]
+          loop_control:
+            label: "{{ item.0 }}"
 
+        - name: Create a VM from a template
+          vmware_guest:
+            hostname: '{{ vihost }}'
+            username: '{{ viuser }}'
+            password: '{{ vipass }}'
+            validate_certs: no
+            datacenter: '{{ vidc }}'
+            cluster: '{{ vicluster }}'
+            folder: '{{ vifolder }}'
+            name: '{{ vmname }}'
+            guest_id: '{{ vm_os }}'
+            state: present
+            template: '{{ vm_template }}'
+            disk: "{{ vm_disks }}"
+            networks: "{{ vm_networks }}"
+            customization:
+              dns_servers: '{{ vm_dns }}'
+              domain: '{{ vm_domain }}'
+              hostname: '{{ vmname }}'
+          delegate_to: localhost
+          register: deploy_info
+
+        - debug: var=deploy_info
+
+        - name: Customize the guest further
+          vsphere_guest:
+            vcenter_hostname: '{{ vihost }}'
+            username: '{{ viuser }}'
+            password: '{{ vipass }}'
+            validate_certs: false
+            guest: '{{ vmname }}'
+            state: reconfigured
+            vm_extra_config:
+              # force keeping the same UUID
+              # maybe not the best idea...
+              ###uuid.action: keep
+              # ensure a 5 sec boot delay
+              bios.bootdelay: 5000
+              notes: VM provisioned via Ansible
+              # need to test if folder can be set using this method
+              ### folder: MyFolder
+          register: reconfigure_info
+                
       rescue:
         # De-allocate any already allocated IP addresses
         - name: "De-allocate IPs"
@@ -126,71 +184,10 @@
             label: "Removing IP for {{item.key}} in {{item.value.network}}"
 
         #- debug: var=ip_removals
+        
+        # We should also un-provision the VM if created
 
         # do a hard stop of the playbook
         # no point in going on further
         - name: "Full stop"
-          meta: end_play        
-
-    # Generate the structures to be passed to the VM creation task
-    # The datastore must be known, and it's based on the site/cluster selected
-    - name: "Generate disk configuration"
-      set_fact:
-        vm_disks: "{{ (vm_disks | default([])) + [disk_template] }}"
-      with_items:
-        - "{{ os_disk }}"
-        - "{{ disks }}"
-    
-    # The ordering of the NICs is important
-    - name: "Generate NIC configuration"
-      set_fact:
-        vm_networks: "{{ (vm_networks | default([])) + [nic_template] }}"
-      with_items: [ "{{ vlan_data|dictsort }}" ]
-
-    #- debug: var=vm_networks
-
-    - fail: msg="Now sod off"
-
-    - name: Create a VM from a template
-      vmware_guest:
-        hostname: '{{ vihost }}'
-        username: '{{ viuser }}'
-        password: '{{ icpass }}'
-        validate_certs: no
-        datacenter: '{{ vidc }}'
-        cluster: '{{ vicluster }}'
-        folder: '{{ vifolder }}'
-        name: '{{ vmname }}'
-        guest_id: '{{ vm_os }}'
-        state: present
-        template: '{{ vm_template }}'
-        disk: "{{ vm_disks }}"
-        networks: "{{ vm_networks }}"
-        customization:
-          dns_servers: '{{ vm_dns }}'
-          domain: '{{ vm_domain }}'
-          hostname: '{{ vmname }}'
-      delegate_to: localhost
-      register: deploy_info
-
-    - debug: var=deploy_info
-
-    - name: Customize the guest further
-      vsphere_guest:
-        vcenter_hostname: '{{ vihost }}'
-        username: '{{ viuser }}'
-        password: '{{ vipass }}'
-        validate_certs: false
-        guest: '{{ vmname }}'
-        state: reconfigured
-        vm_extra_config:
-          # force keeping the same UUID
-          # maybe not the best idea...
-          ###uuid.action: keep
-          # ensure a 5 sec boot delay
-          bios.bootdelay: 5000
-          notes: VM provisioned via Ansible
-          # need to test if folder can be set using this method
-          ### folder: MyFolder
-      register: reconfigure_info
-    
+          meta: end_play
