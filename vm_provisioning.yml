@@ -9,15 +9,9 @@
   vars:
     # default values
 
-    # select the proper backup VLAN based on the security condition we want to use
-    # backup_vlan: "{{ '251' if is_pci else '252' }}"
-    backup_vlan: 'TESTNET'
-    
     # internal use templates
-    ip_template:
-      vlan: "{{ item.1.item }}"
-      network: "{{ item.1.result[0].network }}"
-      hostname: "{{ vmname + item.0|string + '.dso.hilton.com' }}"
+    # these define the structures for the VM configuration
+    # can be customised to suit the needs
     nic_template:
       vlan: "{{ item.1.vlan }}"
       device_type: vmxnet3
@@ -29,12 +23,14 @@
       size_gb: "{{ item }}"
       datastore: "{{ vidatastore }}"
       autoselect_datastore: true
+    # First disk is defined separately
+    # the disk size is by default 60G in this case
     os_disk:
       - 60
 
   vars_prompt:
     - name: "vipass"
-      prompt: "Enter vCenter password:"
+      prompt: "Enter vCenter password"
 
   # Interfaces are named:
   # eth0 - vmname (main host name)
@@ -131,6 +127,11 @@
 
         #- debug: var=ip_removals
 
+        # do a hard stop of the playbook
+        # no point in going on further
+        - name: "Full stop"
+          meta: end_play        
+
     # Generate the structures to be passed to the VM creation task
     # The datastore must be known, and it's based on the site/cluster selected
     - name: "Generate disk configuration"
@@ -161,7 +162,7 @@
         folder: '{{ vifolder }}'
         name: '{{ vmname }}'
         guest_id: '{{ vm_os }}'
-        state: poweredon
+        state: present
         template: '{{ vm_template }}'
         disk: "{{ vm_disks }}"
         networks: "{{ vm_networks }}"
@@ -173,3 +174,23 @@
       register: deploy_info
 
     - debug: var=deploy_info
+
+    - name: Customize the guest further
+      vsphere_guest:
+        vcenter_hostname: '{{ vihost }}'
+        username: '{{ viuser }}'
+        password: '{{ vipass }}'
+        validate_certs: false
+        guest: '{{ vmname }}'
+        state: reconfigured
+        vm_extra_config:
+          # force keeping the same UUID
+          # maybe not the best idea...
+          ###uuid.action: keep
+          # ensure a 5 sec boot delay
+          bios.bootdelay: 5000
+          notes: VM provisioned via Ansible
+          # need to test if folder can be set using this method
+          ### folder: MyFolder
+      register: reconfigure_info
+    
