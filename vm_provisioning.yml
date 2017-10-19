@@ -13,7 +13,8 @@
     # these define the structures for the VM configuration
     # can be customised to suit the needs
     nic_template:
-      vlan: "{{ item.1.vlan }}"
+#      vlan: "{{ item.1.vlan }}"
+      vlan: 123
       device_type: vmxnet3
       type: static
       ip: "{{ item.1.ip }}"
@@ -27,6 +28,12 @@
     # the disk size is by default 60G in this case
     os_disk:
       - 60
+    # this structure holds the provisioning state and results
+    provisioning_info:
+      ip_provisioned: false
+      vm_provisioned: false
+      vlan_data: {}
+      vm_facts: {}
 
   vars_prompt:
     - name: "vipass"
@@ -103,6 +110,9 @@
           loop_control:
             label: "{{item.item.key}}"
 
+        - set_fact:
+            provisioning_info: "{{ provisioning_info|combine({'ip_provisioned': true, 'vlan_data': vlan_data},recursive=True) }}"
+
         # Generate the structures to be passed to the VM creation task
         # The datastore must be known, and it's based on the site/cluster selected
         - name: "Generate disk configuration"
@@ -142,7 +152,10 @@
           delegate_to: localhost
           register: deploy_info
 
-        - debug: var=deploy_info
+        #- debug: var=deploy_info
+
+        - set_fact:
+            provisioning_info: "{{ provisioning_info|combine({'vm_provisioned': True, 'vm_facts': deploy_info.instance},recursive=True) }}"
 
         - name: Customize the guest further
           vsphere_guest:
@@ -161,8 +174,13 @@
               notes: VM provisioned via Ansible
               # need to test if folder can be set using this method
               ### folder: MyFolder
-          register: reconfigure_info
-                
+          #register: reconfigure_info
+
+        - debug: var=provisioning_info
+
+        - name: "Create provisioning data on disk"
+          local_action: copy content="{{ provisioning_info|to_nice_yaml }}" dest="{{ '/home/curteag/' + vmname + '_provisioning.yml' }}"
+
       rescue:
         # De-allocate any already allocated IP addresses
         - name: "De-allocate IPs"
